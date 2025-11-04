@@ -1,0 +1,1091 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { TrendingUp, Calendar, BarChart3, Download, Upload, Plus, Edit2, Trash2, ChevronDown, ChevronRight, Trophy, Target, Zap } from 'lucide-react';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from 'recharts';
+
+const DividendTracker = () => {
+  const [dividends, setDividends] = useState([]);
+  const [activeTab, setActiveTab] = useState('entry');
+  const [newDividend, setNewDividend] = useState({ stock: '', date: '', amount: '' });
+  const [editingId, setEditingId] = useState(null);
+  const [collapsedMonths, setCollapsedMonths] = useState(new Set());
+  const [knownStocks, setKnownStocks] = useState(new Set());
+
+  // Load data from storage on mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const result = await window.storage.get('dividends-data');
+        if (result && result.value) {
+          const data = JSON.parse(result.value);
+          setDividends(data.dividends || []);
+          setKnownStocks(new Set(data.knownStocks || []));
+        }
+      } catch (error) {
+        console.log('No existing data found, starting fresh');
+      }
+    };
+    loadData();
+  }, []);
+
+  // Save data to storage whenever it changes
+  useEffect(() => {
+    const saveData = async () => {
+      if (dividends.length > 0 || knownStocks.size > 0) {
+        try {
+          await window.storage.set('dividends-data', JSON.stringify({
+            dividends,
+            knownStocks: Array.from(knownStocks)
+          }));
+        } catch (error) {
+          console.error('Failed to save data:', error);
+        }
+      }
+    };
+    saveData();
+  }, [dividends, knownStocks]);
+
+  const addDividend = () => {
+    if (newDividend.stock && newDividend.date && newDividend.amount) {
+      const dividend = {
+        id: Date.now(),
+        stock: newDividend.stock.toUpperCase(),
+        date: newDividend.date,
+        amount: parseFloat(newDividend.amount)
+      };
+      setDividends([...dividends, dividend]);
+      setKnownStocks(new Set([...knownStocks, dividend.stock]));
+      setNewDividend({ stock: '', date: '', amount: '' });
+    }
+  };
+
+  const updateDividend = (id) => {
+    setDividends(dividends.map(d => 
+      d.id === id ? { ...d, ...newDividend, amount: parseFloat(newDividend.amount), stock: newDividend.stock.toUpperCase() } : d
+    ));
+    setKnownStocks(new Set([...knownStocks, newDividend.stock.toUpperCase()]));
+    setEditingId(null);
+    setNewDividend({ stock: '', date: '', amount: '' });
+  };
+
+  const deleteDividend = (id) => {
+    setDividends(dividends.filter(d => d.id !== id));
+  };
+
+  const startEdit = (dividend) => {
+    setEditingId(dividend.id);
+    setNewDividend({ stock: dividend.stock, date: dividend.date, amount: dividend.amount.toString() });
+    setActiveTab('entry');
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setNewDividend({ stock: '', date: '', amount: '' });
+  };
+
+  const toggleMonth = (monthKey) => {
+    const newCollapsed = new Set(collapsedMonths);
+    if (newCollapsed.has(monthKey)) {
+      newCollapsed.delete(monthKey);
+    } else {
+      newCollapsed.add(monthKey);
+    }
+    setCollapsedMonths(newCollapsed);
+  };
+
+  // Initialize collapsed months (all except current month)
+  useEffect(() => {
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const monthKeys = new Set();
+    dividends.forEach(d => {
+      const monthKey = d.date.slice(0, 7);
+      if (monthKey !== currentMonth) {
+        monthKeys.add(monthKey);
+      }
+    });
+    setCollapsedMonths(monthKeys);
+  }, [dividends.length === 0]);
+
+  const downloadCSV = () => {
+    const csv = [
+      ['Stock', 'Date', 'Amount (£)'],
+      ...dividends.map(d => [d.stock, d.date, d.amount])
+    ].map(row => row.join(',')).join('\n');
+    
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dividends_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const uploadCSV = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target.result;
+        const rows = text.split('\n').slice(1);
+        const imported = rows.filter(row => row.trim()).map(row => {
+          const [stock, date, amount] = row.split(',');
+          return {
+            id: Date.now() + Math.random(),
+            stock: stock.trim().toUpperCase(),
+            date: date.trim(),
+            amount: parseFloat(amount.trim())
+          };
+        });
+        setDividends([...dividends, ...imported]);
+        imported.forEach(d => setKnownStocks(prev => new Set([...prev, d.stock])));
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  // Analysis calculations
+  const analysis = useMemo(() => {
+    if (dividends.length === 0) return null;
+
+    const sorted = [...dividends].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+
+    const byYear = {};
+    const byMonth = {};
+    const byStock = {};
+    
+    sorted.forEach(d => {
+      const date = new Date(d.date);
+      const year = date.getFullYear();
+      const month = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      
+      byYear[year] = (byYear[year] || 0) + d.amount;
+      byMonth[month] = (byMonth[month] || 0) + d.amount;
+      byStock[d.stock] = byStock[d.stock] || { total: 0, count: 0, payments: [], highest: 0 };
+      byStock[d.stock].total += d.amount;
+      byStock[d.stock].count += 1;
+      byStock[d.stock].payments.push({ date: d.date, amount: d.amount });
+      byStock[d.stock].highest = Math.max(byStock[d.stock].highest, d.amount);
+    });
+
+    const pastYears = Object.entries(byYear)
+      .filter(([year]) => parseInt(year) < currentYear)
+      .map(([year, total]) => {
+        const yearDivs = sorted.filter(d => new Date(d.date).getFullYear() === parseInt(year));
+        return {
+          year: parseInt(year),
+          total,
+          avgPerDay: total / 365,
+          avgPerWeek: total / 52,
+          avgPerMonth: total / 12,
+          count: yearDivs.length,
+          avgPayment: total / yearDivs.length
+        };
+      });
+
+    // Calculate year-over-year growth
+    pastYears.forEach((year, idx) => {
+      if (idx > 0) {
+        const previousYear = pastYears[idx - 1];
+        year.yoyGrowth = ((year.total - previousYear.total) / previousYear.total) * 100;
+      } else {
+        year.yoyGrowth = null;
+      }
+    });
+
+    const currentYearDivs = sorted.filter(d => new Date(d.date).getFullYear() === currentYear);
+    const currentYearTotal = currentYearDivs.reduce((sum, d) => sum + d.amount, 0);
+    const daysSoFar = Math.floor((now - new Date(currentYear, 0, 1)) / (1000 * 60 * 60 * 24));
+    const monthsSoFar = currentMonth + 1;
+    
+    // Calculate current year YoY growth
+    const lastYearData = pastYears.length > 0 ? pastYears[pastYears.length - 1] : null;
+    const currentYearYoY = lastYearData ? ((currentYearTotal - lastYearData.total) / lastYearData.total) * 100 : null;
+
+    // Calculate historical growth rates for different periods
+    const historicalGrowthPeriods = [];
+    
+    if (pastYears.length >= 2) {
+      // 1 year growth (most recent year vs previous)
+      const lastYear = pastYears[pastYears.length - 1];
+      const previousYear = pastYears[pastYears.length - 2];
+      historicalGrowthPeriods.push({
+        period: '1 Year',
+        rate: ((lastYear.total - previousYear.total) / previousYear.total) * 100,
+        from: previousYear.year,
+        to: lastYear.year,
+        fromAmount: previousYear.total,
+        toAmount: lastYear.total
+      });
+    }
+    
+    if (pastYears.length >= 3) {
+      // 3 year average growth
+      const recent3 = pastYears.slice(-3);
+      const growthRates = [];
+      for (let i = 1; i < recent3.length; i++) {
+        growthRates.push((recent3[i].total - recent3[i-1].total) / recent3[i-1].total);
+      }
+      const avg3Year = (growthRates.reduce((a, b) => a + b, 0) / growthRates.length) * 100;
+      historicalGrowthPeriods.push({
+        period: '3 Year Avg',
+        rate: avg3Year,
+        from: recent3[0].year,
+        to: recent3[recent3.length - 1].year,
+        fromAmount: recent3[0].total,
+        toAmount: recent3[recent3.length - 1].total
+      });
+    }
+    
+    if (pastYears.length >= 5) {
+      // 5 year average growth
+      const recent5 = pastYears.slice(-5);
+      const growthRates = [];
+      for (let i = 1; i < recent5.length; i++) {
+        growthRates.push((recent5[i].total - recent5[i-1].total) / recent5[i-1].total);
+      }
+      const avg5Year = (growthRates.reduce((a, b) => a + b, 0) / growthRates.length) * 100;
+      historicalGrowthPeriods.push({
+        period: '5 Year Avg',
+        rate: avg5Year,
+        from: recent5[0].year,
+        to: recent5[recent5.length - 1].year,
+        fromAmount: recent5[0].total,
+        toAmount: recent5[recent5.length - 1].total
+      });
+    }
+    
+    const recentYears = pastYears.slice(-3);
+    let historicalGrowthRate = 0;
+    let growthYearsCount = 0;
+    if (recentYears.length >= 2) {
+      const growthRates = [];
+      for (let i = 1; i < recentYears.length; i++) {
+        growthRates.push((recentYears[i].total - recentYears[i-1].total) / recentYears[i-1].total);
+      }
+      historicalGrowthRate = growthRates.reduce((a, b) => a + b, 0) / growthRates.length;
+      growthYearsCount = recentYears.length;
+    } else if (pastYears.length === 1 && currentYearTotal > 0) {
+      historicalGrowthRate = (currentYearTotal - pastYears[0].total) / pastYears[0].total;
+      growthYearsCount = 2;
+    }
+
+    const lastYearTotal = pastYears.length > 0 ? pastYears[pastYears.length - 1].total : currentYearTotal;
+    
+    // Use the projected full year if we're mid-year, otherwise use the better of current or last year
+    let baseForForecast;
+    if (daysSoFar < 365 && currentYearTotal > 0) {
+      // We're mid-year, so project the full year
+      const projectedFullYear = (currentYearTotal / daysSoFar) * 365;
+      baseForForecast = Math.max(projectedFullYear, lastYearTotal);
+    } else {
+      baseForForecast = Math.max(currentYearTotal, lastYearTotal);
+    }
+    
+    const actualHistoricalRate = historicalGrowthRate;
+    const cappedHistoricalRate = Math.max(-0.25, Math.min(0.25, historicalGrowthRate));
+    
+    // Create multiple forecast models
+    const forecastModels = {
+      conservative: 0.03,  // 3% growth
+      moderate: 0.05,      // 5% growth
+      historical: Math.max(0, historicalGrowthRate), // Historical or 0%
+      optimistic: 0.08     // 8% growth
+    };
+
+    const forecasts = {};
+    Object.entries(forecastModels).forEach(([model, rate]) => {
+      forecasts[model] = [1, 5, 10].map(years => {
+        const projected = baseForForecast * Math.pow(1 + rate, years);
+        return {
+          years,
+          total: projected,
+          avgPerDay: projected / 365,
+          avgPerWeek: projected / 52,
+          avgPerMonth: projected / 12,
+          avgPerYear: projected,
+          growthRate: rate * 100
+        };
+      });
+    });
+
+    const futureDividends = [];
+    Object.entries(byStock).forEach(([stock, data]) => {
+      const payments = data.payments.sort((a, b) => new Date(a.date) - new Date(b.date));
+      if (payments.length >= 2) {
+        const intervals = [];
+        for (let i = 1; i < payments.length; i++) {
+          const days = (new Date(payments[i].date) - new Date(payments[i-1].date)) / (1000 * 60 * 60 * 24);
+          intervals.push(days);
+        }
+        const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+        const lastPayment = new Date(payments[payments.length - 1].date);
+        const nextPayment = new Date(lastPayment.getTime() + avgInterval * 24 * 60 * 60 * 1000);
+        
+        if (nextPayment > now) {
+          const avgAmount = payments.slice(-3).reduce((sum, p) => sum + p.amount, 0) / Math.min(3, payments.length);
+          futureDividends.push({
+            stock,
+            date: nextPayment.toISOString().slice(0, 10),
+            estimatedAmount: avgAmount,
+            confidence: payments.length >= 4 ? 'High' : 'Medium'
+          });
+        }
+      }
+    });
+
+    return {
+      byYear,
+      byMonth,
+      byStock,
+      pastYears,
+      currentYear: {
+        total: currentYearTotal,
+        avgPerDay: currentYearTotal / daysSoFar,
+        avgPerMonth: currentYearTotal / monthsSoFar,
+        projected: (currentYearTotal / daysSoFar) * 365,
+        count: currentYearDivs.length,
+        avgPayment: currentYearDivs.length > 0 ? currentYearTotal / currentYearDivs.length : 0,
+        yoyGrowth: currentYearYoY
+      },
+      forecasts,
+      futureDividends: futureDividends.sort((a, b) => new Date(a.date) - new Date(b.date)),
+      historicalGrowthRate: cappedHistoricalRate * 100,
+      actualHistoricalRate: actualHistoricalRate * 100,
+      growthYearsCount,
+      historicalGrowthPeriods,
+      baseForForecast
+    };
+  }, [dividends]);
+
+  const gamificationStats = useMemo(() => {
+    if (!analysis) return null;
+    
+    const totalEarned = dividends.reduce((sum, d) => sum + d.amount, 0);
+    const uniqueStocks = new Set(dividends.map(d => d.stock)).size;
+    const totalPayments = dividends.length;
+    
+    const milestones = [
+      { threshold: 100, label: 'First £100!', icon: '💷' },
+      { threshold: 500, label: 'Half Grand!', icon: '💰' },
+      { threshold: 1000, label: 'Four Figures!', icon: '🎯' },
+      { threshold: 5000, label: 'Five Grand!', icon: '🏆' },
+      { threshold: 10000, label: 'Five Figures!', icon: '👑' }
+    ];
+    
+    const nextMilestone = milestones.find(m => totalEarned < m.threshold);
+    const progress = nextMilestone ? (totalEarned / nextMilestone.threshold) * 100 : 100;
+    
+    return {
+      totalEarned,
+      uniqueStocks,
+      totalPayments,
+      nextMilestone,
+      progress,
+      level: milestones.filter(m => totalEarned >= m.threshold).length + 1
+    };
+  }, [dividends, analysis]);
+
+  const dividendsByMonth = useMemo(() => {
+    const grouped = {};
+    [...dividends].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(d => {
+      const monthKey = d.date.slice(0, 7);
+      if (!grouped[monthKey]) {
+        grouped[monthKey] = [];
+      }
+      grouped[monthKey].push(d);
+    });
+    return grouped;
+  }, [dividends]);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
+      <div className="max-w-7xl mx-auto">
+        <div className="mb-6">
+          <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+            💎 Dividend Empire
+          </h1>
+          {gamificationStats && (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+              <div className="bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-300">Total Earned</p>
+                    <p className="text-2xl font-bold text-green-400">£{gamificationStats.totalEarned.toFixed(2)}</p>
+                  </div>
+                  <Trophy className="text-yellow-400" size={32} />
+                </div>
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-300">Level</p>
+                    <p className="text-2xl font-bold text-blue-400">{gamificationStats.level}</p>
+                  </div>
+                  <Zap className="text-blue-400" size={32} />
+                </div>
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-300">Unique Stocks</p>
+                    <p className="text-2xl font-bold text-purple-400">{gamificationStats.uniqueStocks}</p>
+                  </div>
+                  <BarChart3 className="text-purple-400" size={32} />
+                </div>
+              </div>
+              <div className="bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-300">Total Payments</p>
+                    <p className="text-2xl font-bold text-pink-400">{gamificationStats.totalPayments}</p>
+                  </div>
+                  <Target className="text-pink-400" size={32} />
+                </div>
+              </div>
+            </div>
+          )}
+          {gamificationStats && gamificationStats.monthlyStreak > 0 && (
+            <div className="mt-4 bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-300">Monthly Streak 🔥</p>
+                  <p className="text-2xl font-bold text-orange-400">{gamificationStats.monthlyStreak} month{gamificationStats.monthlyStreak !== 1 ? 's' : ''}</p>
+                </div>
+                <p className="text-sm text-gray-400">Consecutive months with dividends</p>
+              </div>
+            </div>
+          )}
+          {gamificationStats && gamificationStats.nextMilestone && (
+            <div className="mt-4 bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm">Next Milestone: {gamificationStats.nextMilestone.label}</p>
+                <p className="text-sm font-bold">£{gamificationStats.nextMilestone.threshold}</p>
+              </div>
+              <div className="w-full bg-gray-700 rounded-full h-3">
+                <div 
+                  className="bg-gradient-to-r from-green-400 to-blue-500 h-3 rounded-full transition-all duration-500"
+                  style={{ width: `${gamificationStats.progress}%` }}
+                />
+              </div>
+              <p className="text-xs text-gray-300 mt-1">{gamificationStats.progress.toFixed(1)}% complete</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex space-x-2 mb-6 overflow-x-auto">
+          {[
+            { id: 'entry', label: 'Entry', icon: Plus },
+            { id: 'history', label: 'History', icon: Calendar },
+            { id: 'analysis', label: 'Analysis', icon: BarChart3 },
+            { id: 'forecast', label: 'Forecast', icon: TrendingUp },
+            { id: 'future', label: 'Future Dividends', icon: Calendar }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                activeTab === tab.id
+                  ? 'bg-gradient-to-r from-green-400 to-blue-500 text-white shadow-lg'
+                  : 'bg-white/10 hover:bg-white/20 text-gray-300'
+              }`}
+            >
+              <tab.icon size={18} />
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'entry' && (
+          <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+            <h2 className="text-2xl font-bold mb-4 flex items-center">
+              <Plus className="mr-2" /> {editingId ? 'Edit' : 'Add'} Dividend Payment
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Stock Symbol</label>
+                <input
+                  type="text"
+                  list="stock-list"
+                  value={newDividend.stock}
+                  onChange={(e) => setNewDividend({ ...newDividend, stock: e.target.value })}
+                  className="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g., AAPL"
+                />
+                <datalist id="stock-list">
+                  {Array.from(knownStocks).map(stock => (
+                    <option key={stock} value={stock} />
+                  ))}
+                </datalist>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Date</label>
+                <input
+                  type="date"
+                  value={newDividend.date}
+                  onChange={(e) => setNewDividend({ ...newDividend, date: e.target.value })}
+                  className="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Amount (£)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newDividend.amount}
+                  onChange={(e) => setNewDividend({ ...newDividend, amount: e.target.value })}
+                  className="w-full px-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="0.00"
+                />
+              </div>
+            </div>
+            <div className="flex space-x-2">
+              {editingId ? (
+                <>
+                  <button
+                    onClick={() => updateDividend(editingId)}
+                    className="flex-1 bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 px-6 py-3 rounded-lg font-medium transition-all shadow-lg"
+                  >
+                    Update Payment
+                  </button>
+                  <button
+                    onClick={cancelEdit}
+                    className="px-6 py-3 rounded-lg font-medium bg-white/10 hover:bg-white/20 transition-all"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={addDividend}
+                  className="flex-1 bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 px-6 py-3 rounded-lg font-medium transition-all shadow-lg"
+                >
+                  Add Payment
+                </button>
+              )}
+            </div>
+            <div className="flex space-x-2 mt-4">
+              <button
+                onClick={downloadCSV}
+                className="flex-1 flex items-center justify-center space-x-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg transition-all"
+              >
+                <Download size={18} />
+                <span>Download CSV</span>
+              </button>
+              <label className="flex-1 flex items-center justify-center space-x-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-lg transition-all cursor-pointer">
+                <Upload size={18} />
+                <span>Upload CSV</span>
+                <input type="file" accept=".csv" onChange={uploadCSV} className="hidden" />
+              </label>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'history' && (
+          <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+            <h2 className="text-2xl font-bold mb-4">Payment History</h2>
+            {Object.keys(dividendsByMonth).length === 0 ? (
+              <p className="text-gray-400">No dividend payments recorded yet.</p>
+            ) : (
+              <div className="space-y-4">
+                {Object.entries(dividendsByMonth).map(([monthKey, monthDividends]) => {
+                  const date = new Date(monthKey + '-01');
+                  const monthTotal = monthDividends.reduce((sum, d) => sum + d.amount, 0);
+                  const isCollapsed = collapsedMonths.has(monthKey);
+                  
+                  return (
+                    <div key={monthKey} className="bg-white/5 rounded-lg overflow-hidden">
+                      <button
+                        onClick={() => toggleMonth(monthKey)}
+                        className="w-full flex items-center justify-between p-4 hover:bg-white/10 transition-all"
+                      >
+                        <div className="flex items-center space-x-3">
+                          {isCollapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
+                          <span className="font-semibold">
+                            {date.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}
+                          </span>
+                          <span className="text-sm text-gray-400">({monthDividends.length} payments)</span>
+                        </div>
+                        <span className="text-green-400 font-bold">£{monthTotal.toFixed(2)}</span>
+                      </button>
+                      {!isCollapsed && (
+                        <div className="p-4 pt-0 space-y-2">
+                          {monthDividends.map(d => (
+                            <div key={d.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+                              <div>
+                                <p className="font-semibold">{d.stock}</p>
+                                <p className="text-sm text-gray-400">{new Date(d.date).toLocaleDateString('en-GB')}</p>
+                              </div>
+                              <div className="flex items-center space-x-3">
+                                <span className="text-green-400 font-bold">£{d.amount.toFixed(2)}</span>
+                                <button
+                                  onClick={() => startEdit(d)}
+                                  className="p-2 hover:bg-white/10 rounded-lg transition-all"
+                                >
+                                  <Edit2 size={16} />
+                                </button>
+                                <button
+                                  onClick={() => deleteDividend(d.id)}
+                                  className="p-2 hover:bg-red-500/20 rounded-lg transition-all"
+                                >
+                                  <Trash2 size={16} className="text-red-400" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'analysis' && analysis && (
+          <div className="space-y-6">
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">Yearly Performance Trend</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={analysis.pastYears.concat([{
+                  year: new Date().getFullYear(),
+                  total: analysis.currentYear.total,
+                  avgPerMonth: analysis.currentYear.avgPerMonth,
+                  count: dividends.filter(d => new Date(d.date).getFullYear() === new Date().getFullYear()).length
+                }])}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
+                  <XAxis dataKey="year" stroke="#fff" />
+                  <YAxis stroke="#fff" />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                    labelStyle={{ color: '#fff' }}
+                  />
+                  <Area type="monotone" dataKey="total" stroke="#10b981" fill="#10b98150" name="Total (£)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">Past Years Performance</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-white/20">
+                      <th className="text-left p-3">Year</th>
+                      <th className="text-right p-3">Total</th>
+                      <th className="text-right p-3">YoY Growth</th>
+                      <th className="text-right p-3">Avg/Day</th>
+                      <th className="text-right p-3">Avg/Week</th>
+                      <th className="text-right p-3">Avg/Month</th>
+                      <th className="text-right p-3">Payments</th>
+                      <th className="text-right p-3">Avg Payment</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analysis.pastYears.map(year => (
+                      <tr key={year.year} className="border-b border-white/10">
+                        <td className="p-3 font-semibold">{year.year}</td>
+                        <td className="p-3 text-right text-green-400 font-bold">£{year.total.toFixed(2)}</td>
+                        <td className={`p-3 text-right font-semibold ${year.yoyGrowth === null ? 'text-gray-500' : year.yoyGrowth >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {year.yoyGrowth === null ? '-' : `${year.yoyGrowth >= 0 ? '+' : ''}${year.yoyGrowth.toFixed(1)}%`}
+                        </td>
+                        <td className="p-3 text-right">£{year.avgPerDay.toFixed(2)}</td>
+                        <td className="p-3 text-right">£{year.avgPerWeek.toFixed(2)}</td>
+                        <td className="p-3 text-right">£{year.avgPerMonth.toFixed(2)}</td>
+                        <td className="p-3 text-right">{year.count}</td>
+                        <td className="p-3 text-right text-blue-400">£{year.avgPayment.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">Current Year ({new Date().getFullYear()})</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+                <div className="bg-white/5 rounded-lg p-4">
+                  <p className="text-sm text-gray-400">Total This Year</p>
+                  <p className="text-2xl font-bold text-green-400">£{analysis.currentYear.total.toFixed(2)}</p>
+                </div>
+                <div className="bg-white/5 rounded-lg p-4">
+                  <p className="text-sm text-gray-400">YoY Growth</p>
+                  <p className={`text-2xl font-bold ${analysis.currentYear.yoyGrowth === null ? 'text-gray-500' : analysis.currentYear.yoyGrowth >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {analysis.currentYear.yoyGrowth === null ? '-' : `${analysis.currentYear.yoyGrowth >= 0 ? '+' : ''}${analysis.currentYear.yoyGrowth.toFixed(1)}%`}
+                  </p>
+                </div>
+                <div className="bg-white/5 rounded-lg p-4">
+                  <p className="text-sm text-gray-400">Payments</p>
+                  <p className="text-2xl font-bold text-pink-400">{analysis.currentYear.count}</p>
+                </div>
+                <div className="bg-white/5 rounded-lg p-4">
+                  <p className="text-sm text-gray-400">Avg Per Month</p>
+                  <p className="text-2xl font-bold">£{analysis.currentYear.avgPerMonth.toFixed(2)}</p>
+                </div>
+                <div className="bg-white/5 rounded-lg p-4">
+                  <p className="text-sm text-gray-400">Avg Payment</p>
+                  <p className="text-2xl font-bold text-blue-400">£{analysis.currentYear.avgPayment.toFixed(2)}</p>
+                </div>
+                <div className="bg-white/5 rounded-lg p-4">
+                  <p className="text-sm text-gray-400">Projected Full Year</p>
+                  <p className="text-2xl font-bold text-blue-400">£{analysis.currentYear.projected.toFixed(2)}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">Payment Count by Stock</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={Object.entries(analysis.byStock)
+                  .sort((a, b) => b[1].count - a[1].count)
+                  .slice(0, 10)
+                  .map(([stock, data]) => ({ stock, count: data.count, total: data.total }))}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
+                  <XAxis dataKey="stock" stroke="#fff" />
+                  <YAxis stroke="#fff" />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                    labelStyle={{ color: '#fff' }}
+                  />
+                  <Bar dataKey="count" fill="#a855f7" name="Payment Count" />
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="space-y-3 mt-4">
+                {Object.entries(analysis.byStock)
+                  .sort((a, b) => b[1].count - a[1].count)
+                  .map(([stock, data]) => {
+                    const maxCount = Math.max(...Object.values(analysis.byStock).map(s => s.count));
+                    const barWidth = (data.count / maxCount) * 100;
+                    
+                    return (
+                      <div key={stock} className="bg-white/5 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-lg font-semibold">{stock}</h3>
+                          <span className="text-sm text-gray-400">{data.count} payments</span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div 
+                            className="bg-gradient-to-r from-purple-400 to-pink-500 h-2 rounded-full transition-all duration-500"
+                            style={{ width: `${barWidth}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">Total Earnings by Stock</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={Object.entries(analysis.byStock)
+                  .sort((a, b) => b[1].total - a[1].total)
+                  .slice(0, 10)
+                  .map(([stock, data]) => ({ stock, total: data.total, count: data.count }))}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
+                  <XAxis dataKey="stock" stroke="#fff" />
+                  <YAxis stroke="#fff" />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                    labelStyle={{ color: '#fff' }}
+                    formatter={(value) => `£${value.toFixed(2)}`}
+                  />
+                  <Bar dataKey="total" fill="#10b981" name="Total Earned (£)" />
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="space-y-3 mt-4">
+                {Object.entries(analysis.byStock)
+                  .sort((a, b) => b[1].total - a[1].total)
+                  .map(([stock, data]) => (
+                    <div key={stock} className="bg-white/5 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-lg font-semibold">{stock}</h3>
+                          <p className="text-sm text-gray-400">{data.count} payments</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-green-400 font-bold text-xl">£{data.total.toFixed(2)}</p>
+                          <p className="text-sm text-gray-400">£{(data.total / data.count).toFixed(2)} avg</p>
+                          <p className="text-xs text-blue-400">£{data.highest.toFixed(2)} highest</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'forecast' && analysis && (
+          <div className="space-y-6">
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">Your Historical Growth</h2>
+              <p className="text-gray-300 mb-4">
+                Based on your actual dividend history
+              </p>
+              {analysis.historicalGrowthPeriods.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-white/20">
+                        <th className="text-left p-3">Period</th>
+                        <th className="text-left p-3">Years</th>
+                        <th className="text-right p-3">Starting Amount</th>
+                        <th className="text-right p-3">Ending Amount</th>
+                        <th className="text-right p-3">Growth Rate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analysis.historicalGrowthPeriods.map((period, idx) => (
+                        <tr key={idx} className="border-b border-white/10">
+                          <td className="p-3 font-semibold">{period.period}</td>
+                          <td className="p-3">{period.from} - {period.to}</td>
+                          <td className="p-3 text-right">£{period.fromAmount.toFixed(2)}</td>
+                          <td className="p-3 text-right">£{period.toAmount.toFixed(2)}</td>
+                          <td className={`p-3 text-right font-bold ${period.rate >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {period.rate >= 0 ? '+' : ''}{period.rate.toFixed(2)}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-gray-400">Add more historical data to see growth trends (need at least 2 years of data)</p>
+              )}
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">Future Growth Scenarios</h2>
+              <p className="text-gray-300 mb-4">
+                Based on starting amount: <span className="text-green-400 font-bold">£{analysis.baseForForecast.toFixed(2)}</span>
+              </p>
+              
+              <div className="mb-6">
+                <ResponsiveContainer width="100%" height={400}>
+                  <LineChart data={[
+                    {
+                      year: 'Now',
+                      yearNum: 0,
+                      conservative: analysis.baseForForecast,
+                      moderate: analysis.baseForForecast,
+                      optimistic: analysis.baseForForecast
+                    },
+                    {
+                      year: 'Year 1',
+                      yearNum: 1,
+                      conservative: analysis.forecasts.conservative[0].total,
+                      moderate: analysis.forecasts.moderate[0].total,
+                      optimistic: analysis.forecasts.optimistic[0].total
+                    },
+                    {
+                      year: 'Year 5',
+                      yearNum: 5,
+                      conservative: analysis.forecasts.conservative[1].total,
+                      moderate: analysis.forecasts.moderate[1].total,
+                      optimistic: analysis.forecasts.optimistic[1].total
+                    },
+                    {
+                      year: 'Year 10',
+                      yearNum: 10,
+                      conservative: analysis.forecasts.conservative[2].total,
+                      moderate: analysis.forecasts.moderate[2].total,
+                      optimistic: analysis.forecasts.optimistic[2].total
+                    }
+                  ]}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
+                    <XAxis 
+                      dataKey="year" 
+                      stroke="#fff"
+                    />
+                    <YAxis 
+                      stroke="#fff"
+                      label={{ value: 'Total (£)', angle: -90, position: 'insideLeft', fill: '#fff' }}
+                    />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                      labelStyle={{ color: '#fff' }}
+                      formatter={(value) => `£${value.toFixed(2)}`}
+                    />
+                    <Legend />
+                    <Line 
+                      type="monotone" 
+                      dataKey="conservative" 
+                      stroke="#fbbf24" 
+                      strokeWidth={2}
+                      name="Conservative (5%)"
+                      dot={{ r: 4 }}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="moderate" 
+                      stroke="#10b981" 
+                      strokeWidth={2}
+                      name="Moderate (10%)"
+                      dot={{ r: 4 }}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="optimistic" 
+                      stroke="#a855f7" 
+                      strokeWidth={2}
+                      name="Optimistic (25%)"
+                      dot={{ r: 4 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {Object.entries({
+                  conservative: { name: 'Conservative', color: 'yellow', rate: '5%' },
+                  moderate: { name: 'Moderate', color: 'green', rate: '10%' },
+                  optimistic: { name: 'Optimistic', color: 'purple', rate: '25%' }
+                }).map(([model, info]) => (
+                  <div key={model} className="bg-white/5 rounded-lg p-4">
+                    <h3 className={`text-lg font-bold mb-1 text-${info.color}-400`}>
+                      {info.name} ({info.rate})
+                    </h3>
+                    <div className="space-y-2">
+                      {analysis.forecasts[model].map(forecast => (
+                        <div key={forecast.years} className="flex justify-between text-sm">
+                          <span className="text-gray-400">Year {forecast.years}:</span>
+                          <span className="font-bold">£{forecast.total.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {Object.entries({
+              conservative: { name: 'Conservative Growth', desc: 'Safe 5% annual growth', color: 'from-yellow-500 to-orange-500' },
+              moderate: { name: 'Moderate Growth', desc: 'Balanced 10% annual growth', color: 'from-green-500 to-emerald-500' },
+              optimistic: { name: 'Optimistic Growth', desc: 'Ambitious 25% annual growth', color: 'from-purple-500 to-pink-500' }
+            }).map(([model, info]) => (
+              <div key={model} className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+                <div className={`inline-block px-3 py-1 rounded-full text-sm font-semibold mb-2 bg-gradient-to-r ${info.color}`}>
+                  {info.name}
+                </div>
+                <p className="text-gray-300 mb-4">{info.desc}</p>
+                <div className="space-y-4">
+                  {analysis.forecasts[model].map(forecast => (
+                    <div key={forecast.years} className="bg-white/5 rounded-lg p-4">
+                      <h4 className="text-lg font-bold mb-3">
+                        {forecast.years} Year{forecast.years > 1 ? 's' : ''} Projection
+                      </h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div>
+                          <p className="text-xs text-gray-400">Total Year</p>
+                          <p className="text-lg font-bold text-green-400">£{forecast.total.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400">Per Day</p>
+                          <p className="text-lg font-bold">£{forecast.avgPerDay.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400">Per Week</p>
+                          <p className="text-lg font-bold">£{forecast.avgPerWeek.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400">Per Month</p>
+                          <p className="text-lg font-bold">£{forecast.avgPerMonth.toFixed(2)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+              <h2 className="text-2xl font-bold mb-4">10-Year Comparison</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={[
+                  { 
+                    model: 'Conservative', 
+                    value: analysis.forecasts.conservative[2].total,
+                    fill: '#fbbf24'
+                  },
+                  { 
+                    model: 'Moderate', 
+                    value: analysis.forecasts.moderate[2].total,
+                    fill: '#10b981'
+                  },
+                  { 
+                    model: 'Optimistic', 
+                    value: analysis.forecasts.optimistic[2].total,
+                    fill: '#a855f7'
+                  }
+                ]}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
+                  <XAxis dataKey="model" stroke="#fff" />
+                  <YAxis stroke="#fff" />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
+                    labelStyle={{ color: '#fff' }}
+                    formatter={(value) => `£${value.toFixed(2)}`}
+                  />
+                  <Bar dataKey="value" name="10-Year Total (£)">
+                    {[0, 1, 2].map((entry, index) => (
+                      <Bar key={`cell-${index}`} dataKey="value" fill={['#fbbf24', '#10b981', '#a855f7'][index]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'future' && analysis && (
+          <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+            <h2 className="text-2xl font-bold mb-4">📅 Future Dividend Calendar</h2>
+            <p className="text-gray-300 mb-6">
+              Predicted dividend payments based on historical patterns
+            </p>
+            {analysis.futureDividends.length === 0 ? (
+              <p className="text-gray-400">Not enough historical data to predict future dividends. Add more payments to see predictions.</p>
+            ) : (
+              <div className="space-y-3">
+                {analysis.futureDividends.map((fd, idx) => (
+                  <div key={idx} className="bg-white/5 rounded-lg p-4 border-l-4 border-blue-500">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold">{fd.stock}</h3>
+                        <p className="text-sm text-gray-400">
+                          Expected: {new Date(fd.date).toLocaleDateString('en-GB', { 
+                            weekday: 'long', 
+                            year: 'numeric', 
+                            month: 'long', 
+                            day: 'numeric' 
+                          })}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Confidence: <span className={fd.confidence === 'High' ? 'text-green-400' : 'text-yellow-400'}>
+                            {fd.confidence}
+                          </span>
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm text-gray-400">Estimated</p>
+                        <p className="text-xl font-bold text-blue-400">£{fd.estimatedAmount.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default DividendTracker;
